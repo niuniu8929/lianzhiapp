@@ -1,0 +1,102 @@
+name: Build Android APK (Local)
+
+on:
+  workflow_dispatch:  # 仅手动触发，避免产生过多 Artifacts
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Fix package.json dependencies
+        run: |
+          cd client
+          # 移除有问题的依赖
+          sed -i '/react-native-reanimated/d' package.json
+          sed -i '/react-native-chart-kit/d' package.json
+          sed -i '/expo-location/d' package.json
+          sed -i '/expo-camera/d' package.json
+          sed -i '/react-native-keyboard-aware-scroll-view/d' package.json
+          sed -i '/react-native-worklets/d' package.json
+          echo "=== Fixed package.json ==="
+          cat package.json | grep -A 50 '"dependencies"'
+
+      - name: Install dependencies
+        run: |
+          cd client
+          rm -rf node_modules package-lock.json
+          npm install
+
+      - name: Create node_modules symlink for Metro
+        run: |
+          ln -s client/node_modules node_modules
+          echo "Created node_modules symlink"
+
+      - name: Prebuild Android project
+        run: |
+          cd client
+          npx expo prebuild --platform android --clean
+
+      - name: Build Release APK
+        id: build
+        continue-on-error: true
+        working-directory: client/android
+        run: |
+          chmod +x gradlew
+          export GRADLE_OPTS="-Xmx6g -Xms2g"
+          bash gradlew assembleRelease --stacktrace 2>&1 | tee build.log
+
+      - name: Show build errors
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "=========================================="
+          echo "BUILD FAILED - ERROR DETAILS:"
+          echo "=========================================="
+          grep -A 5 "FAILURE\|What went wrong\|Execution failed\|Caused by" client/android/build.log | head -n 50
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: client/android/build.log
+          retention-days: 1
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
+
+      - name: Find APK files
+        if: always()
+        run: |
+          echo "Searching for APK files..."
+          find client/android -name "*.apk" 2>/dev/null || echo "No APK files found"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workhours-app-release
+          path: |
+            client/android/app/build/outputs/apk/release/*.apk
+            client/android/app/build/outputs/apk/**/*.apk
+          retention-days: 30
+          if-no-files-found: warn
